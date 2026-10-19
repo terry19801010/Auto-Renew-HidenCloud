@@ -578,12 +578,18 @@ def renew_service(page):
 
                 # 动态轮询检测是否出现“未到续期时间”提示或正常弹出 Create Invoice
                 start_poll = time.time()
-                while time.time() - start_poll < 8:
+                while time.time() - start_poll < 10:
                     time.sleep(1)
+                    # 点击 Renew 后可能再次触发整页安全验证：先处理，否则弹窗永远出不来
+                    if _has_interstitial_iframe(page) or _is_security_check_page(page):
+                        log("⚠️ 点击 Renew 后出现安全验证，先处理...")
+                        handle_cloudflare(page, timeout=90)
+                        continue
                     page_text = page.locator("body").inner_text().lower()
                     if any(k in page_text for k in [
-                        "renewal restricted", "can only renew", "you can only renew", 
-                        "renouvellement restreint", "too early"
+                        "renewal restricted", "can only renew", "you can only renew",
+                        "renouvellement restreint", "too early", "not yet available",
+                        "please try again later"
                     ]):
                         log("⚠️ 未到续期时间，无法续期。")
                         page.screenshot(path="renew_not_allowed.png")
@@ -594,6 +600,17 @@ def renew_service(page):
                         log("✅ 弹窗已成功弹出！")
                         break
 
+                    # 兼容站点改版：出现任意可见弹窗即视为打开，并记录其文本便于排查
+                    try:
+                        dialog = page.locator('[role="dialog"]:visible, div[class*="modal" i]:visible').first
+                        if dialog.count() > 0 and dialog.is_visible():
+                            modal_opened = True
+                            dlg_text = (dialog.inner_text() or "")[:200].replace("\n", " ")
+                            log(f"✅ 检测到弹窗已弹出（内容：{dlg_text}）")
+                            break
+                    except Exception:
+                        pass
+
                     # 检查是否直接跳转或出现未支付发票
                     if "/payment/invoice/" in page.url:
                         modal_opened = True
@@ -603,6 +620,13 @@ def renew_service(page):
                 if modal_opened:
                     break
 
+                # 本轮未成功：截图 + 记录页面文本片段，便于下次排查
+                try:
+                    page.screenshot(path=f"renew_click_{i+1}_no_modal.png")
+                    snippet = (page.locator("body").inner_text() or "")[:200].replace("\n", " ")
+                    log(f"🔍 第 {i+1} 次点击后页面文本片段：{snippet}")
+                except Exception:
+                    pass
                 log("⚠️ 弹窗未出现，可能是点击未响应，准备重试...")
                 time.sleep(2)
             except Exception as e:
